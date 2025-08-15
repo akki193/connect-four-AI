@@ -1,64 +1,19 @@
-from connect_four import Game
+from connect_four import Game, GameFuncs
 import numpy as np
 from termcolor import colored, cprint
 import sys
+import time
 
 sys.setrecursionlimit(10000)
+pruning_counter = 0
 
-class Model():
+class MiniMax():
     def __init__(self, MaxPlayer):
         self.MaxPlayer = MaxPlayer
         if MaxPlayer == 1:
             self.MinPlayer = 2
         else:
             self.MinPlayer = 1
-
-    def __make_move(self, state, action):
-        new_state = state.copy()
-        turn = self.__change_turn(state)
-        actions = self.__get_actions(state)
-        if action in actions:
-            col = action - 1
-            for i in range(1, state.shape[0]+1):
-                if new_state[-i, col] == 0:
-                    new_state[-i, col] = turn
-                    break
-        return new_state
-    
-    def __change_turn(self, state):
-        if np.sum(state != 0) % 2 == 0:
-            return 1
-        else:
-            return 2
-        
-    def __winner_check(self, state):
-        height = state.shape[0]
-        width = state.shape[1]
-        for row in range(height):
-            for col in range(width - 3):
-                if state[row, col] != 0 and state[row, col] == state[row, col + 1] == state[row, col + 2] == state[row, col + 3]:
-                    return state[row, col]
-
-        for col in range(width):
-            for row in range(height - 3):
-                if state[row, col] != 0 and state[row, col] == state[row + 1, col] == state[row + 2, col] == state[row + 3, col]:
-                    return state[row, col]
-
-        for row in range(height - 3):
-            for col in range(width - 3):
-                if state[row, col] != 0 and state[row, col] == state[row + 1, col + 1] == state[row + 2, col + 2] == state[row + 3, col + 3]:
-                    return state[row, col]
-
-        for row in range(height - 3):
-            for col in range(3, width):
-                if state[row, col] != 0 and state[row, col] == state[row + 1, col - 1] == state[row + 2, col - 2] == state[row + 3, col - 3]:
-                    return state[row, col]
-
-        return 0
-        
-    def __get_actions(self, state):
-        mask = np.sum(state != 0, axis=0) != state.shape[0]
-        return np.array([1, 2, 3, 4, 5, 6, 7])[mask]
 
     def eval_center(self, state):
         state_center = state[:-2, 2:-2]
@@ -212,89 +167,103 @@ class Model():
         total_score += 0.25*(center_score)
 
 
+        winner = GameFuncs.cls_check_game_status(state)
+        if winner == self.MaxPlayer:
+            total_score += 5000 - np.sum(state != 0)
+        elif winner == self.MinPlayer:
+            total_score += -5000 + np.sum(state != 0)
 
-        if self.__winner_check(state) == self.MaxPlayer:
-            total_score += 5000
-        elif self.__winner_check(state) == self.MinPlayer:
-            total_score += -5000
+
         
 
         return total_score
     
-    def minimax(self, state, depth):
-        winner = self.__winner_check(state)
+    def minimax(self, state, depth, include_ab, alpha=-float('inf'), beta=float('inf'), pruning_soft_val=0):
+        winner = GameFuncs.cls_check_game_status(state)
         if winner == self.MaxPlayer:
-            return (1000-depth, state)
+            return (5000 - depth, None)
         elif winner == self.MinPlayer:
-            return (-1000+depth, state)
+            return (-5000 + depth, None)
+
 
         if depth == 0:
-            return (self.evaluate(state), state)
-        move_order = self.__change_turn(state)
+            return (self.evaluate(state), None)
+        move_order = GameFuncs.cls_change_turn(state)
 
         if move_order == self.MaxPlayer:
             maxeval = (-float('inf'), None)
             for child, action in self.get_childs(state):
-                evaluation = (self.minimax(child, depth-1)[0], action)
+                evaluation = (self.minimax(child, depth-1, include_ab, alpha=alpha, beta=beta, pruning_soft_val=pruning_soft_val)[0], action)
                 if maxeval[0] <= evaluation[0]:
                     maxeval = evaluation
+                alpha = max(alpha, maxeval[0])
+                if beta+pruning_soft_val <= alpha and include_ab:
+                    break
             return maxeval
         else:
             mineval = (float('inf'), None)
             for child, action in self.get_childs(state):
-                evaluation = (self.minimax(child, depth-1)[0], action)
+                evaluation = (self.minimax(child, depth-1, include_ab, alpha=alpha, beta=beta, pruning_soft_val=pruning_soft_val)[0], action)
                 if mineval[0] > evaluation[0]:
                     mineval = evaluation
+                beta = min(beta, mineval[0])
+                if beta+pruning_soft_val <= alpha and include_ab:
+                    break
+            
             return mineval
 
     def get_childs(self, state):
-        actions = self.__get_actions(state)
-        childs = [(self.__make_move(state, action), action) for action in actions]
+        actions = GameFuncs.cls_get_actions(state)
+        childs = [(GameFuncs.cls_make_move(state, action), action) for action in actions]
 
         return childs
-
     
-class GameFuncs(Game):
-    def play(self, model: Model, depth):
+    def play_with_AI(self, game_cls, depth, prune_soft_val):
+        reward, move = None, None
         while True:
-            self.print_colored_grid()
-            if self.change_turn() == 1: turn_msg = 'Yellow'
-            else: turn_msg = 'Red'
-            print(f"{turn_msg} turn!")
-            print(f"Possible moves: {self.get_actions()}")
-            if self.change_turn() == model.MaxPlayer:
-                move = model.minimax(self.get_grid(), depth)[1]
+            player = game_cls.change_turn()
+            game_cls.print_colored_grid()
+            turn_msg = "AI" if player == self.MaxPlayer else ("Yellow" if player == 1 else "Red")
+            print(colored(f"{turn_msg} turn!", "yellow" if player == 1 else "red"))
+            print(f"Possible moves: {game_cls.get_actions()}")
+            if game_cls.change_turn() == self.MaxPlayer:
+                reward, move = self.minimax(game_cls.get_grid(), depth, True, pruning_soft_val=prune_soft_val)
             else:
+                #reward, move = self.minimax(game_cls.get_grid(), depth, False, pruning_soft_val=prune_soft_val)
+                
                 move = int(input())
-            self.make_move(move)
+            game_cls.make_move(move)
+            
 
-            game_status = self.check_game_status()
+
+            game_status = game_cls.check_game_status()
             if game_status == -1:
                 cprint("Draw!", 'black', 'yellow')
                 break
             elif game_status in [1, 2]:
-                if game_status == 1: cprint(f"Player {int(game_status)} won!", 'yellow')
-                else: cprint(f"Player {int(game_status)} won!", 'red')
+                if game_status != self.MaxPlayer:
+                    cprint(f"Player {str(int(game_status))} won!", 'yellow' if game_status == 1 else 'red')
+                else:
+                    cprint(f"AI won!", 'yellow' if game_status == 1 else "red")
                 break
-        self.print_colored_grid()
+        game_cls.print_colored_grid()
 
-    def print_colored_state(self, state):
-        for row in range(state.shape[0]):
-            for col in range(state.shape[1]):
-                if state[row, col] == 0: print(colored("■ ", 'white'), end='')
-                elif state[row, col] == 1: print(colored("● ", 'yellow'), end='')
-                else: print(colored("● ", 'red'), end='')
-            print()
-
-
-    
 
 
     
 def main():
-    model = Model(2)
-    game = GameFuncs()
-    game.play(model, 5)
+    game = Game()
+    minimax = MiniMax(2)
+
+    minimax.play_with_AI(game, 5, 5)
+
+
+
+
+
+
+
+
 
 
 
